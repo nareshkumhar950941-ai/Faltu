@@ -1,9 +1,26 @@
 import os
 import sys
 import asyncio
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import requests
 
-# Ensure asyncio loop exists
+# 1. Render Web Service ke liye Chota Health-Check Server (Port binding)
+class SimpleHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive and running!")
+
+def run_http_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), SimpleHandler)
+    server.serve_forever()
+
+# Background thread me HTTP server chalayein
+threading.Thread(target=run_http_server, daemon=True).start()
+
+# 2. Asyncio event loop ensure karein
 try:
     asyncio.get_running_loop()
 except RuntimeError:
@@ -44,7 +61,7 @@ def upload_to_dailymotion(file_path: str, title: str):
     token = get_dm_access_token()
     headers = {"Authorization": f"Bearer {token}"}
 
-    # 1. Upload URL prapt karein
+    # Upload URL prapt karein
     upload_url_res = requests.get(
         "https://api.dailymotion.com/file/upload",
         headers=headers,
@@ -56,7 +73,7 @@ def upload_to_dailymotion(file_path: str, title: str):
 
     upload_url = upload_url_res["upload_url"]
 
-    # 2. File upload karein Dailymotion par
+    # File upload karein Dailymotion par
     with open(file_path, "rb") as f:
         up_res = requests.post(upload_url, files={"file": f}, timeout=1800).json()
 
@@ -64,7 +81,7 @@ def upload_to_dailymotion(file_path: str, title: str):
     if not file_result_url:
         raise Exception(f"File upload fail: {up_res}")
 
-    # 3. Video publish karein (is_created_for_kids = false zaroori hai)
+    # Video publish karein
     clean_title = (title or "Uploaded Video")[:250].strip()
     create_payload = {
         "url": file_result_url,
@@ -92,7 +109,8 @@ def upload_to_dailymotion(file_path: str, title: str):
 
 @app.on_message(filters.command("start"))
 async def start_cmd(_, msg: Message):
-    await msg.reply_text("👋 Namaste! Mujhe koi bhi video forward ya send karein, main Dailymotion par upload karke watch aur embed link de dunga.")
+    print(f"Received /start from {msg.chat.id}")
+    await msg.reply_text("👋 Namaste! Bot live hai. Mujhe koi bhi video forward ya send karein, main use Dailymotion par upload kar dunga.")
 
 @app.on_message(filters.video | filters.document)
 async def handle_video(_, msg: Message):
@@ -104,6 +122,7 @@ async def handle_video(_, msg: Message):
         return
 
     title = msg.caption or getattr(media, "file_name", None) or "Telegram Video"
+    print(f"Processing video: {title}")
     status_msg = await msg.reply_text("⏳ 1/2 Video Telegram se download ho rahi hai...")
 
     download_path = None
@@ -123,8 +142,10 @@ async def handle_video(_, msg: Message):
             f"📺 **Embed Link:** {embed_url}"
         )
         await status_msg.edit_text(reply_text, disable_web_page_preview=False)
+        print("Upload successful!")
 
     except Exception as e:
+        print(f"Error occurred: {e}")
         await status_msg.edit_text(f"❌ Error: {e}")
     finally:
         if download_path and os.path.exists(download_path):
@@ -133,5 +154,10 @@ async def handle_video(_, msg: Message):
             except Exception:
                 pass
 
+@app.on_message(filters.text & ~filters.command("start"))
+async def handle_other_text(_, msg: Message):
+    await msg.reply_text("Bot active hai! Kripya koi video bhejein ya forward karein.")
+
 if __name__ == "__main__":
+    print("Bot is starting...")
     app.run()
