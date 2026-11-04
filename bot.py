@@ -2,11 +2,39 @@ import os
 import time
 import requests
 import asyncio
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+# --- 1. PYTHON 3.14 EVENT LOOP FIX (Render crash fix) ---
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
-# Render ke Environment Variables se values uthayega
-# Agar local testing kar rahe hain to fallback values use hongi
+# --- 2. RENDER WEB SERVICE HEALTH CHECK FIX ---
+# Render Web Service ko port chahiye hota hai, taaki wo crash na ho
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive and running!")
+    def log_message(self, format, *args):
+        pass  # Logs clean rakhne ke liye
+
+def start_health_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server.serve_forever()
+
+# Background me port server chalu karein
+threading.Thread(target=start_health_server, daemon=True).start()
+
+
+# --- 3. CREDENTIALS (Render Env Vars ya Fallback) ---
 API_ID = int(os.environ.get("API_ID", 31266551))
 API_HASH = os.environ.get("API_HASH", "f2ebfd089cc0958fbedad2088fdc917b")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8765142201:AAHuJ3EpQ83NAcozShmIXqoH7JnXCIE9Oi8")
