@@ -1,13 +1,11 @@
 import os
-import time
-import requests
+import sys
 import asyncio
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import requests
 
-# --- 1. PYTHON 3.14 EVENT LOOP FIX (Render crash fix) ---
+# Event loop ensure karein
 try:
-    asyncio.get_event_loop()
+    asyncio.get_running_loop()
 except RuntimeError:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -15,27 +13,8 @@ except RuntimeError:
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
-# --- 2. RENDER WEB SERVICE HEALTH CHECK FIX ---
-# Render Web Service ko port chahiye hota hai, taaki wo crash na ho
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is alive and running!")
-    def log_message(self, format, *args):
-        pass  # Logs clean rakhne ke liye
-
-def start_health_server():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-    server.serve_forever()
-
-# Background me port server chalu karein
-threading.Thread(target=start_health_server, daemon=True).start()
-
-
-# --- 3. CREDENTIALS (Render Env Vars ya Fallback) ---
-API_ID = int(os.environ.get("API_ID", 31266551))
+# Render Environment Variables (ya direct values)
+API_ID = int(os.environ.get("API_ID", "31266551"))
 API_HASH = os.environ.get("API_HASH", "f2ebfd089cc0958fbedad2088fdc917b")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8765142201:AAHuJ3EpQ83NAcozShmIXqoH7JnXCIE9Oi8")
 
@@ -44,17 +23,11 @@ DM_API_SECRET = os.environ.get("DM_API_SECRET", "8fe3500e687d7f9b03e740964b01fb1
 DM_USERNAME = os.environ.get("DM_USERNAME", "nareshduran99@gmail.com")
 DM_PASSWORD = os.environ.get("DM_PASSWORD", "@Nareshbhi9982")
 
-app = Client(
-    "dm_uploader_bot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN
-)
-
+app = Client("dm_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 def get_dm_access_token():
-    url = "https://api.dailymotion.com/oauth/token"
-    payload = {
+    auth_url = "https://api.dailymotion.com/oauth/token"
+    data = {
         "grant_type": "password",
         "client_id": DM_API_KEY,
         "client_secret": DM_API_SECRET,
@@ -62,133 +35,114 @@ def get_dm_access_token():
         "password": DM_PASSWORD,
         "scope": "manage_videos"
     }
-    res = requests.post(url, data=payload).json()
+    r = requests.post(auth_url, data=data, timeout=30)
+    res = r.json()
     if "access_token" in res:
         return res["access_token"]
-    raise Exception(f"Dailymotion Login Fail: {res}")
-
+    raise Exception(f"Dailymotion login fail: {res}")
 
 def upload_to_dailymotion(file_path: str, title: str):
     token = get_dm_access_token()
     headers = {"Authorization": f"Bearer {token}"}
 
-    upload_url_res = requests.get("https://api.dailymotion.com/file/upload", headers=headers).json()
-    upload_url = upload_url_res.get("upload_url")
-    if not upload_url:
-        raise Exception(f"Upload URL error: {upload_url_res}")
+    # 1. Upload URL mangwayein
+    upload_url_res = requests.get(
+        "https://api.dailymotion.com/file/upload",
+        headers=headers,
+        timeout=30
+    ).json()
 
+    if "upload_url" not in upload_url_res:
+        raise Exception(f"Upload URL fail: {upload_url_res}")
+
+    upload_url = upload_url_res["upload_url"]
+
+    # 2. File upload karein
     with open(file_path, "rb") as f:
-        upload_res = requests.post(upload_url, files={"file": f}).json()
+        up_res = requests.post(upload_url, files={"file": f}, timeout=600).json()
 
-    uploaded_url = upload_res.get("url")
-    if not uploaded_url:
-        raise Exception(f"File upload fail: {upload_res}")
+    file_result_url = up_res.get("url")
+    if not file_result_url:
+        raise Exception(f"File upload response invalid: {up_res}")
 
-    create_url = "https://api.dailymotion.com/me/videos"
-    payload = {
-        "url": uploaded_url,
-        "title": title,
+    # 3. Create video (Clean title aur parameters)
+    clean_title = (title or "Uploaded Video")[:250].strip()
+    create_payload = {
+        "url": file_result_url,
+        "title": clean_title,
         "published": "true",
-        "channel": "fun"
-    }
-    video_res = requests.post(create_url, headers=headers, data=payload).json()
-    video_id = video_res.get("id")
-
-    if not video_id:
-        raise Exception(f"Video publish fail: {video_res}")
-
-    return {
-        "id": video_id,
-        "stream_link": f"https://www.dailymotion.com/video/{video_id}",
-        "embed_link": f"https://www.dailymotion.com/embed/video/{video_id}"
+        "channel": "news"
     }
 
+    create_res = requests.post(
+        "https://api.dailymotion.com/me/videos",
+        headers=headers,
+        data=create_payload,
+        timeout=30
+    ).json()
 
-async def progress(current, total, message: Message, start_time, action_name):
-    now = time.time()
-    diff = now - start_time
-    if round(diff % 5.00) == 0 or current == total:
-        percentage = current * 100 / total
-        speed = current / diff if diff > 0 else 0
-        elapsed_time = round(diff)
-        eta = round((total - current) / speed) if speed > 0 else 0
+    if "id" not in create_res:
+        # Agar error aaye toh bina channel ke try karein
+        retry_res = requests.post(
+            "https://api.dailymotion.com/me/videos",
+            headers=headers,
+            data={"url": file_result_url, "title": clean_title},
+            timeout=30
+        ).json()
+        if "id" in retry_res:
+            create_res = retry_res
+        else:
+            raise Exception(f"Video publish fail: {create_res}")
 
-        text = (
-            f"🔄 **{action_name}...**\n\n"
-            f"📊 **Progress:** `{percentage:.1f}%`\n"
-            f"📦 **Size:** `{current / (1024 * 1024):.2f} MB / {total / (1024 * 1024):.2f} MB`\n"
-            f"⚡ **Speed:** `{speed / (1024 * 1024):.2f} MB/s`\n"
-            f"⏳ **ETA:** `{eta}s`"
-        )
-        try:
-            await message.edit_text(text)
-        except Exception:
-            pass
+    video_id = create_res["id"]
+    watch_url = f"https://www.dailymotion.com/video/{video_id}"
+    embed_url = f"https://www.dailymotion.com/embed/video/{video_id}"
 
+    return watch_url, embed_url
 
-@app.on_message(filters.command("start") & filters.private)
-async def start_cmd(client: Client, message: Message):
-    await message.reply_text(
-        "👋 **Namaste! Main Dailymotion Uploader Bot hoon.**\n\n"
-        "📹 Mujhe koi bhi video bhejo (upto 2GB).\n"
-        "• Title video se auto nikal jayega\n"
-        "• Dailymotion par direct upload hoga\n"
-        "• Streaming aur download/embed link mil jayega!"
-    )
+@app.on_message(filters.command("start"))
+async def start_cmd(_, msg: Message):
+    await msg.reply_text("👋 Namaste! Mujhe koi bhi video bhejein ya forward karein, main use Dailymotion par upload karke links dunga.")
 
-
-@app.on_message((filters.video | filters.document) & filters.private)
-async def video_handler(client: Client, message: Message):
-    media = message.video or message.document
-
-    if message.document and not (message.document.mime_type and message.document.mime_type.startswith("video/")):
+@app.on_message(filters.video | filters.document)
+async def handle_video(_, msg: Message):
+    media = msg.video or msg.document
+    if not media:
         return
 
-    status_msg = await message.reply_text("⚡ Download shuru ho raha hai...", quote=True)
+    # Sirf video mime check
+    if msg.document and not (media.mime_type and media.mime_type.startswith("video/")):
+        return
 
-    if message.caption:
-        video_title = message.caption.strip()
-    elif hasattr(media, "file_name") and media.file_name:
-        video_title = os.path.splitext(media.file_name)[0]
-    else:
-        video_title = f"Video_{media.file_unique_id}"
+    title = msg.caption or getattr(media, "file_name", None) or "Telegram Video"
+    status_msg = await msg.reply_text("⏳ Video download ho rahi hai...")
 
-    start_time = time.time()
-    file_path = f"downloads/{media.file_unique_id}.mp4"
-    os.makedirs("downloads", exist_ok=True)
-
+    download_path = None
     try:
-        await message.download(
-            file_name=file_path,
-            progress=progress,
-            progress_args=(status_msg, start_time, "Downloading from Telegram")
-        )
-
-        await status_msg.edit_text(
-            f"🚀 **Title:** `{video_title}`\n\n"
-            "📤 Dailymotion par upload ho raha hai, thoda intezar karein..."
-        )
+        download_path = await msg.download()
+        await status_msg.edit_text("📤 Dailymotion par upload ho rahi hai...")
 
         loop = asyncio.get_event_loop()
-        dm_data = await loop.run_in_executor(None, upload_to_dailymotion, file_path, video_title)
-
-        final_text = (
-            f"✅ **Dailymotion par Upload Ho Gaya!**\n\n"
-            f"🎬 **Title:** `{video_title}`\n"
-            f"🆔 **Video ID:** `{dm_data['id']}`\n\n"
-            f"▶️ **Online Streaming Link:**\n{dm_data['stream_link']}\n\n"
-            f"📥 **Player / Embed Link:**\n{dm_data['embed_link']}"
+        watch_url, embed_url = await loop.run_in_executor(
+            None, upload_to_dailymotion, download_path, title
         )
-        await status_msg.edit_text(final_text, disable_web_page_preview=False)
+
+        reply_text = (
+            f"✅ **Video Upload Ho Gayi!**\n\n"
+            f"📌 **Title:** {title}\n"
+            f"🔗 **Watch Link:** {watch_url}\n"
+            f"📺 **Embed Link:** {embed_url}"
+        )
+        await status_msg.edit_text(reply_text, disable_web_page_preview=False)
 
     except Exception as e:
-        await status_msg.edit_text(f"❌ **Error:** `{str(e)}`")
-
+        await status_msg.edit_text(f"❌ Error: {e}")
     finally:
-        if os.path.exists(file_path):
-            os.remove(file_path)
-
+        if download_path and os.path.exists(download_path):
+            try:
+                os.remove(download_path)
+            except Exception:
+                pass
 
 if __name__ == "__main__":
-    print("🤖 Dailymotion MTProto Bot Running on Render...")
     app.run()
