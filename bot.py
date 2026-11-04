@@ -42,7 +42,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "8765142201:AAHuJ3EpQ83NAcozShmIXqoH7JnX
 DM_API_KEY = os.environ.get("DM_API_KEY", "ce70a9ac41a3aad3c8a4")
 DM_API_SECRET = os.environ.get("DM_API_SECRET", "8fe3500e687d7f9b03e740964b01fb1e0156da1c")
 DM_USERNAME = os.environ.get("DM_USERNAME", "nareshduran99@gmail.com")
-DM_PASSWORD = os.environ.get("DM_PASSWORD", "@naresh9982483529")
+DM_PASSWORD = os.environ.get("DM_PASSWORD", "@Nareshbhi9982")
 
 app = Client(
     "dm_uploader_bot",
